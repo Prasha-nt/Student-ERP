@@ -1,5 +1,6 @@
 const CACHE_NAME = "student-app-v2"
 const urlsToCache = [
+  "/",
   "/manifest.json",
   "/icon-192x192.png",
   "/icon-512x512.png",
@@ -7,6 +8,7 @@ const urlsToCache = [
 
 // Install event – safe caching
 self.addEventListener("install", (event) => {
+  console.log('Service Worker installing...')
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       console.log("Opened cache")
@@ -15,14 +17,14 @@ self.addEventListener("install", (event) => {
           fetch(url)
             .then((response) => {
               if (!response.ok) {
-                throw new Error(`Failed to fetch ${url}: ${response.status}`)
+                throw new Error(Failed to fetch ${url}: ${response.status})
               }
               return cache.put(url, response.clone())
             })
             .catch((err) => {
-              console.warn(`Skipping caching ${url}:`, err)
+              console.warn(Skipping caching ${url}:, err)
             })
-          )
+        )
       )
     })
   )
@@ -40,6 +42,7 @@ self.addEventListener("fetch", (event) => {
 
 // Activate event – clean old caches
 self.addEventListener("activate", (event) => {
+  console.log('Service Worker activating...')
   event.waitUntil(
     caches.keys().then((cacheNames) =>
       Promise.all(
@@ -57,14 +60,35 @@ self.addEventListener("activate", (event) => {
 
 // Push event – show notification
 self.addEventListener("push", (event) => {
-  const options = {
-    body: event.data ? event.data.text() : "New notification from Student App",
+  console.log('Push event received:', event)
+  
+  let notificationData = {
+    title: "Student App",
+    body: "New notification from Student App",
     icon: "/icon-192x192.png",
-    badge: "/icon-192x192.png",
+    badge: "/icon-192x192.png"
+  }
+
+  if (event.data) {
+    try {
+      const data = event.data.json()
+      notificationData = { ...notificationData, ...data }
+    } catch (e) {
+      notificationData.body = event.data.text()
+    }
+  }
+
+  const options = {
+    body: notificationData.body,
+    icon: notificationData.icon,
+    badge: notificationData.badge,
     vibrate: [100, 50, 100],
+    requireInteraction: true, // Keep notification visible until user interacts
+    persistent: true,
     data: {
       dateOfArrival: Date.now(),
       primaryKey: "2",
+      url: "/"
     },
     actions: [
       {
@@ -81,15 +105,55 @@ self.addEventListener("push", (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification("Student App", options)
+    self.registration.showNotification(notificationData.title, options)
   )
 })
 
 // Notification click event – handle actions
 self.addEventListener("notificationclick", (event) => {
+  console.log('Notification click received:', event)
+  
   event.notification.close()
+  
+  if (event.action === "explore" || !event.action) {
+    // Open the app when notification is clicked
+    event.waitUntil(
+      clients.matchAll({ type: 'window' }).then((clientList) => {
+        // Check if app is already open
+        for (const client of clientList) {
+          if (client.url === self.location.origin + '/' && 'focus' in client) {
+            return client.focus()
+          }
+        }
+        // If not open, open new window
+        if (clients.openWindow) {
+          return clients.openWindow('/')
+        }
+      })
+    )
+  }
+})
 
-  if (event.action === "explore") {
-    event.waitUntil(clients.openWindow("/"))
+// Background sync (optional - for offline actions)
+self.addEventListener('sync', (event) => {
+  console.log('Background sync event:', event.tag)
+  if (event.tag === 'background-sync') {
+    event.waitUntil(
+      // Handle background sync tasks here
+      Promise.resolve()
+    )
+  }
+})
+
+// Message event - for communication between main thread and service worker
+self.addEventListener('message', (event) => {
+  console.log('Message received in service worker:', event.data)
+  
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting()
+  }
+  
+  if (event.data && event.data.type === 'GET_VERSION') {
+    event.ports[0].postMessage({ version: CACHE_NAME })
   }
 })
