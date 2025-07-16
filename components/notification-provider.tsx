@@ -1,31 +1,58 @@
 "use client"
 
 import type React from "react"
-import { createContext, useContext, useEffect } from "react"
+import { createContext, useContext, useEffect, useState } from "react"
 import { useToast } from "@/components/ui/use-toast"
 
 interface NotificationContextType {
   sendTestNotification: () => void;
+  isSupported: boolean;
+  permission: NotificationPermission;
+  swRegistration: ServiceWorkerRegistration | null;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined)
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const { toast } = useToast()
+  const [isSupported, setIsSupported] = useState(false)
+  const [permission, setPermission] = useState<NotificationPermission>("default")
+  const [swRegistration, setSwRegistration] = useState<ServiceWorkerRegistration | null>(null)
 
-  // This useEffect focuses solely on service worker registration.
+  // Service worker registration and notification setup
   useEffect(() => {
+    // Check if notifications are supported
+    if ("Notification" in window) {
+      setIsSupported(true)
+      setPermission(Notification.permission)
+    }
+
+    // Register service worker
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
         .register("/sw.js")
         .then((registration) => {
           console.log("Service Worker registered:", registration)
+          setSwRegistration(registration)
+          
+          // Handle service worker updates
+          registration.addEventListener('updatefound', () => {
+            const newWorker = registration.installing
+            if (newWorker) {
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  // New service worker is available
+                  console.log('New service worker available')
+                }
+              })
+            }
+          })
         })
         .catch((error) => {
           console.error("Service Worker registration failed:", error)
           toast({
             title: "Error",
-            description: "Failed to register app services. App may not work offline.",
+            description: "Failed to register app services. Notifications may not work properly.",
             variant: "destructive",
           })
         })
@@ -33,15 +60,22 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       console.warn("Service Workers not supported in this browser.")
       toast({
         title: "Browser Compatibility",
-        description: "Your browser does not fully support essential app features.",
+        description: "Your browser does not fully support service workers. Notifications may not work.",
         variant: "destructive",
       })
     }
-  }, []);
+
+    // Listen for service worker messages
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        console.log('Received message from service worker:', event.data)
+      })
+    }
+  }, [toast])
 
   const sendTestNotification = async () => {
     // 1. Check if the Notification API is supported by the browser
-    if (!("Notification" in window)) {
+    if (!isSupported) {
       toast({
         title: "Not Supported",
         description: "Notifications are not supported in your current browser.",
@@ -50,7 +84,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       return;
     }
 
-    // 2. Provide guidance for iOS users regarding PWA installation
+    // 2. Check if service worker is registered
+    if (!swRegistration) {
+      toast({
+        title: "Service Worker Not Ready",
+        description: "Service worker is not registered yet. Please try again in a moment.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // 3. Provide guidance for iOS users regarding PWA installation
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone;
 
@@ -62,13 +106,15 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       });
     }
 
-    // 3. Request permission if needed
-    if (Notification.permission === "default") {
+    // 4. Request permission if needed
+    if (permission === "default") {
       try {
-        const permission = await Notification.requestPermission();
-        if (permission === "granted") {
+        const newPermission = await Notification.requestPermission();
+        setPermission(newPermission);
+        
+        if (newPermission === "granted") {
           console.log("Notification permission granted.");
-          showLocalNotification();
+          await showNotification();
         } else {
           console.log("Notification permission denied or dismissed.");
           toast({
@@ -85,11 +131,11 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           variant: "destructive",
         });
       }
-    } else if (Notification.permission === "granted") {
+    } else if (permission === "granted") {
       // Permission already granted, proceed
       console.log("Notification permission already granted.");
-      showLocalNotification();
-    } else { // Notification.permission === "denied"
+      await showNotification();
+    } else { // permission === "denied"
       // Permission is denied/blocked
       console.log("Notifications are already blocked.");
       toast({
@@ -100,18 +146,76 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }
   };
 
-  // This function shows a local notification directly from the app's main thread.
-  // This is the ONLY type of notification you can show without a backend.
-  // It will only work if the PWA or browser tab is active.
-  const showLocalNotification = () => {
+  // Enhanced notification function that works on both desktop and mobile
+  const showNotification = async () => {
     try {
-      new Notification("📢 Student App", {
+      // Method 1: Try service worker notification first (works better on mobile)
+      if (swRegistration) {
+        try {
+          await swRegistration.showNotification("📢 Student App", {
+            body: "✅ Test notification sent successfully!",
+            icon: "/icon-192x192.png",
+            badge: "/icon-192x192.png",
+            // vibrate: [100, 50, 100],
+            requireInteraction: true,
+            persistent: true,
+            data: {
+              dateOfArrival: Date.now(),
+              primaryKey: "test-notification",
+              url: "/"
+            },
+            actions: [
+              {
+                action: "explore",
+                title: "Open App",
+                icon: "/icon-192x192.png",
+              },
+              {
+                action: "close",
+                title: "Close",
+                icon: "/icon-192x192.png",
+              },
+            ],
+          });
+
+          console.log("Service worker notification sent successfully");
+          
+          // Try to vibrate if supported
+          if ("vibrate" in navigator) {
+            navigator.vibrate([100, 50, 100]);
+            console.log("Device vibrating...");
+          }
+
+          toast({
+            title: "Test Notification Sent",
+            description: "A test notification should have appeared on your screen.",
+          });
+          
+          return; // Success, exit early
+        } catch (swError) {
+          console.warn("Service worker notification failed, trying direct notification:", swError);
+        }
+      }
+
+      // Method 2: Fallback to direct notification (works on desktop)
+      const notification = new Notification("📢 Student App", {
         body: "✅ Test notification sent successfully!",
         icon: "/icon-192x192.png",
         badge: "/icon-192x192.png",
-        // vibrate: [100, 50, 100] // Note: This option is a hint, browser behavior may vary
+        requireInteraction: true,
+        data: {
+          dateOfArrival: Date.now(),
+          primaryKey: "test-notification"
+        }
       });
 
+      // Handle notification click
+      notification.onclick = () => {
+        window.focus();
+        notification.close();
+      };
+
+      // Try to vibrate if supported
       if ("vibrate" in navigator) {
         navigator.vibrate([100, 50, 100]);
         console.log("Device vibrating...");
@@ -121,8 +225,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         title: "Test Notification Sent",
         description: "A test notification should have appeared on your screen.",
       });
+
     } catch (error) {
-      console.error("Error trying to show local notification:", error);
+      console.error("Error trying to show notification:", error);
       toast({
         title: "Notification Display Error",
         description: "Failed to display the test notification. Check console for details.",
@@ -132,7 +237,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   };
 
   return (
-    <NotificationContext.Provider value={{ sendTestNotification }}>
+    <NotificationContext.Provider value={{ 
+      sendTestNotification, 
+      isSupported, 
+      permission, 
+      swRegistration 
+    }}>
       {children}
     </NotificationContext.Provider>
   )
